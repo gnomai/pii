@@ -61,9 +61,13 @@ def _matches(data: bytes, pin: FilePin) -> bool:
     return len(data) == pin.bytes and hashlib.sha256(data).hexdigest() == pin.sha256
 
 
-def download(url: str, dest: Optional[Path], pin: FilePin, on_progress: Optional[Progress] = None, timeout: float = 60.0) -> bytes:
+def download(
+    url: str, dest: Optional[Path], pin: FilePin, on_progress: Optional[Progress] = None,
+    timeout: float = 60.0, *, require_cache: bool = False,
+) -> bytes:
     """Downloads url and returns its bytes; raises ModelFileError unless they match pin. When dest is given, the file is
-    also written there (atomically); a cache that cannot be written is skipped, as the npm package does."""
+    also written there (atomically). Ordinary loads can keep using verified bytes if the cache is unwritable.
+    Explicit offline preparation requires the write to succeed."""
     req = urllib.request.Request(url, headers={"User-Agent": f"newmean-pii/{_core.VERSION} (python)"})
     h = hashlib.sha256()
     chunks = []
@@ -91,11 +95,13 @@ def download(url: str, dest: Optional[Path], pin: FilePin, on_progress: Optional
             with open(tmp, "wb") as f:
                 f.write(data)
             os.replace(tmp, dest)
-        except OSError:
+        except OSError as e:
             try:
                 tmp.unlink()
             except OSError:
                 pass
+            if require_cache:
+                raise ModelFileError(f"cannot write model cache file {dest}: {e}") from e
     return data
 
 
@@ -107,6 +113,7 @@ def load_file(
     cache_dir: Optional[PathLike] = None,
     model_url: Optional[str] = None,
     on_progress: Optional[Progress] = None,
+    require_cache: bool = False,
 ) -> Tuple[bytes, Path]:
     """Bytes of a verified model file and where they came from: model_dir if given (never downloads), else the cache,
     else a download from model_url (default: Hugging Face newmean-ai/pii-<size> at the model version tag) into the cache."""
@@ -137,7 +144,7 @@ def load_file(
     base = model_url or default_url(size)
     if not base.endswith("/"):
         base += "/"
-    return download(base + pin.path, path, pin, on_progress), path
+    return download(base + pin.path, path, pin, on_progress, require_cache=require_cache), path
 
 
 def fetch_model(
@@ -150,6 +157,6 @@ def fetch_model(
 ) -> Path:
     """Downloads (or checks) the files of one model into the cache and returns its folder, usable as model_dir."""
     variant = variant or DEFAULT_VARIANT.get(size) or "q4"
-    _, tok = load_file(size, "tokenizer", cache_dir=cache_dir, model_url=model_url, on_progress=on_progress)
-    load_file(size, variant, cache_dir=cache_dir, model_url=model_url, on_progress=on_progress)
+    _, tok = load_file(size, "tokenizer", cache_dir=cache_dir, model_url=model_url, on_progress=on_progress, require_cache=True)
+    load_file(size, variant, cache_dir=cache_dir, model_url=model_url, on_progress=on_progress, require_cache=True)
     return tok.parent

@@ -96,6 +96,30 @@ def test_file_url(fake_pins, tmp_path):
     assert data == BODY and path.is_file()
 
 
+@pytest.mark.parametrize("failed_file", ["tokenizer.web.json", "model_q4.onnx"])
+def test_fetch_model_requires_complete_cache(fake_pins, tmp_path, monkeypatch, failed_file):
+    mirror = tmp_path / "mirror"
+    cache = tmp_path / "cache"
+    for name in ("tokenizer.web.json", "onnx/model_q4.onnx"):
+        put(mirror, name, BODY)
+    replace = os.replace
+
+    def refuse_write(src, dest):
+        if dest.name == failed_file:
+            raise PermissionError("simulated read-only cache")
+        replace(src, dest)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", refuse_write)
+        with pytest.raises(ModelFileError, match="cache") as err:
+            newmean_pii.fetch_model("nano", cache_dir=cache, model_url=mirror.as_uri())
+        assert failed_file in str(err.value)
+    assert not list(cache.rglob("*.part"))
+    folder = newmean_pii.fetch_model("nano", cache_dir=cache, model_url=mirror.as_uri())
+    assert (folder / "tokenizer.web.json").read_bytes() == BODY
+    assert (folder / "onnx/model_q4.onnx").read_bytes() == BODY
+
+
 def test_unwritable_cache_still_loads(server, fake_pins, tmp_path):
     put(server.root, "onnx/model_q4.onnx", BODY)
     blocker = tmp_path / "file"
